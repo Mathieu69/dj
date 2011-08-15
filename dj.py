@@ -34,6 +34,7 @@ import gst
 from gobject import timeout_add
 from gdata.youtube.service import YouTubeService
 import sys
+import gtk
 
 simple_title_chars = string.ascii_letters.decode('ascii') + string.digits.decode('ascii')
 
@@ -75,15 +76,17 @@ def sanitize_title(utitle):
     return utitle.replace(unicode(os.sep), u'%')
 
 class Mixer:
-    def __init__(self):
+    def __init__(self, app):
         ges.init()
+        self.app = app
         self.tl = ges.timeline_new_audio_video()
         self.layer = ges.TimelineLayer()
         self.tl.add_layer(self.layer)
         self.pipeline = ges.TimelinePipeline()
         self.pipeline.add_timeline(self.tl)
         self.bus = self.pipeline.get_bus()
-        self.bus.set_sync_handler(self.bus_handler)
+        self.bus.set_sync_handler(self._elementMessageCb)
+        self.bus.connect("sync-message::element", self.on_sync_message)
         self.srclist = []
         self.prev_end = 0
 
@@ -106,13 +109,45 @@ class Mixer:
     def start_playing(self):
         self.pipeline.set_state(gst.STATE_PLAYING)
 
-    def bus_handler(self, unused_bus, message):
-        if message.type == gst.MESSAGE_ERROR:
-            print "ERROR"
-        elif message.type == gst.MESSAGE_EOS:
-            print "Done"
+    def change_starts(self):
+        self.pipeline.set_state(gst.STATE_PAUSED)
+        self.tl.enable_update(False)
+        pos = self.pipeline.query_position(gst.FORMAT_TIME)[0]
+        current_src = None
+        for src in self.srclist:
+            if src.get_property("start") < pos < src.get_property("duration") + src.get_property("start"):
+                current_src = src
+                break
+        self.pipeline.seek(1.0, format, gst.SEEK_FLAG_FLUSH,
+                                  gst.SEEK_TYPE_SET, long(current_src.get_property("duration") + current_src.get_property("start") - pos),
+                                  gst.SEEK_TYPE_NONE, -1)
+        self.pipeline.set_state(gst.STATE_PLAYING)
+        self.tl.enable_update(True)
 
+    def _elementMessageCb(self, unused_bus, message):
+        if message.type == gst.MESSAGE_ELEMENT:
+            name = message.structure.get_name()
+            if name == 'prepare-xwindow-id':
+                sink = message.src
+                self.sink = sink
+                gtk.gdk.threads_enter()
+                self.sink.set_xwindow_id(self.app.movie_window.window.xid)
+                gtk.gdk.threads_leave()
         return gst.BUS_PASS
+
+    def on_sync_message(self, bus, message):
+        print "rm"
+        if message.structure is None:
+            return
+        message_name = message.structure.get_name()
+        print message_name
+        if message_name == "prepare-xwindow-id":
+            print "zob"
+            imagesink = message.src
+            imagesink.set_property("force-aspect-ratio", True)
+            gtk.gdk.threads_enter()
+            imagesink.set_xwindow_id(self.app.movie_window.window.xid)
+            gtk.gdk.threads_leave()
 
 class YouTubeDl:
     _video_extensions = {
@@ -274,9 +309,76 @@ class YouTubeDl:
 
 class Application:
     def __init__(self):
+
+        gtk.gdk.threads_init()
+        window = gtk.Window(gtk.WINDOW_TOPLEVEL)
+        window.set_title("Video-Player")
+        window.set_default_size(500, 400)
+        window.connect("destroy", gtk.main_quit, "WM destroy")
+        window.connect("destroy", self.destroy)
+        vbox = gtk.VBox()
+        window.add(vbox)
+        hbox = gtk.HBox()
+        vbox.pack_start(hbox, False)
+        self.entry = gtk.Entry()
+        hbox.add(self.entry)
+        self.entry.connect
+        self.button = gtk.Button("Start")
+        hbox.pack_start(self.button, False)
+        self.next_button = gtk.Button("Next")
+        hbox.pack_start(self.next_button, False)
+        self.next_button.connect("clicked", self._nextCb)
+        self.button.connect("clicked", self._activatedCb)
+        self.entry.connect("activate", self._activatedCb)
+        self.movie_window = gtk.DrawingArea()
+        vbox.add(self.movie_window)
+        window.show_all()
+        self.window = window
+        self.movie_window.add_events(gtk.gdk.BUTTON_PRESS_MASK)
+        self.movie_window.connect('button-press-event', self._on_movie_press_cb)
+        self.movie_window.connect('button-release-event', self._on_movie_press_cb)
+
         self.dl = YouTubeDl()
-        self.viewer = Mixer()
+        self.viewer = Mixer(self)
         self.dl_folder = None
+        self.playing = False
+        self.full = False
+
+    def _on_movie_press_cb(self, widget, event):
+        event.button = 1
+        if event.type == gtk.gdk._2BUTTON_PRESS:
+            if self.full == False:
+                self.entry.hide()
+                self.button.hide()
+                self.next_button.hide()
+                self.window.fullscreen()
+                self.full = True
+            else:
+                self.entry.show()
+                self.button.show()
+                self.next_button.show()
+                self.window.unfullscreen()
+                self.full = False
+
+    def _activatedCb(self, entry):
+        text = self.entry.get_text()
+        self.entry.set_text("")
+        self.add_video(text)
+        if not self.playing :
+            timeout_add(2000, self.start_playing)
+            self.playing = True
+
+    def _nextCb(self, button):
+        print "ok"
+        self.viewer.change_starts()
+
+    def destroy(self, unused):
+        for the_file in os.listdir(self.dl_folder):
+            file_path = os.path.join(self.dl_folder, the_file)
+            try:
+                os.unlink(file_path)
+            except Exception, e:
+                print e
 
     def start_playing(self):
         timeout_add(5000, self.viewer.start_playing)
@@ -291,9 +393,12 @@ class Application:
         timeout_add(1000, self.viewer.add_source, self.dl.uri)
 
     def _downloadFileComplete(self, gdaemonfile, result):
+        print "get feed"
         related_feed = YouTubeService().GetYouTubeRelatedVideoFeed(video_id = self.short_name)
+        print "set best"
         best = None
         best_ratio = 0
+        print "start loop"
         for entry in related_feed.entry:
             ratio = float(entry.statistics.favorite_count) / float (entry.statistics.view_count)
             if ratio > best_ratio:
@@ -301,20 +406,19 @@ class Application:
                 best = entry
         print best.media.title.text
         self.add_video(best.media.player.url)
+        print "added video"
+
 def main(args):
-    usage = "usage : %s url, download folder\n" % args[0]
-    if (len(args) < 3):
+    usage = "usage : %s download folder\n" % args[0]
+    if (len(args) < 2):
         sys.stderr.write(usage)
         sys.exit(1)
     parser = optparse.OptionParser (usage=usage)
     (opts, args) = parser.parse_args ()
 
     a = Application()
-    a.dl_folder = (args[1])
-    a.add_video(args[0])
-    timeout_add(2000, a.start_playing)
-    mainloop = glib.MainLoop()
-    mainloop.run()
+    a.dl_folder = (args[0])
+    gtk.main()
 
 if __name__ == "__main__":
     main(sys.argv)
