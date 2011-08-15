@@ -99,7 +99,8 @@ class Mixer:
             self.prev_end = self.prev_end + long(self.srclist[len(self.srclist) - 1].get_property("start"))
         src = ges.TimelineFileSource(uri)
         src.set_start(long(self.prev_end))
-        self.layer.add_object(src)
+        if len(self.srclist) < 10:
+            self.layer.add_object(src)
         self.srclist.append(src)
 
     def start_playing(self):
