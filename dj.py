@@ -112,17 +112,19 @@ class Mixer:
     def change_starts(self):
         self.pipeline.set_state(gst.STATE_PAUSED)
         self.tl.enable_update(False)
+        print "started"
         pos = self.pipeline.query_position(gst.FORMAT_TIME)[0]
         current_src = None
         for src in self.srclist:
-            if src.get_property("start") < pos < src.get_property("duration") + src.get_property("start"):
+            if long(src.get_property("start")) < long(pos) < long(src.get_property("duration")) + long(src.get_property("start")):
                 current_src = src
                 break
-        self.pipeline.seek(1.0, format, gst.SEEK_FLAG_FLUSH,
-                                  gst.SEEK_TYPE_SET, long(current_src.get_property("duration") + current_src.get_property("start") - pos),
+        self.pipeline.seek(1.0, gst.FORMAT_TIME, gst.SEEK_FLAG_FLUSH,
+                                  gst.SEEK_TYPE_SET, long(long(current_src.get_property("duration")) + long(current_src.get_property("start")) - long(25000000000)),
                                   gst.SEEK_TYPE_NONE, -1)
         self.pipeline.set_state(gst.STATE_PLAYING)
         self.tl.enable_update(True)
+        print "ended seeking"
 
     def _elementMessageCb(self, unused_bus, message):
         if message.type == gst.MESSAGE_ELEMENT:
